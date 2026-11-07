@@ -1,0 +1,73 @@
+
+name: Build Ceph Squid Offline Bundle
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ceph-offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Install zstd
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y zstd
+
+      - name: Pull Ceph image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="quay.io/ceph/ceph:v19.2.3"
+
+          docker pull --platform linux/amd64 "$IMAGE"
+
+          docker image inspect "$IMAGE" \
+            --format 'OS={{.Os}} Architecture={{.Architecture}}'
+
+          docker run --rm --platform linux/amd64 \
+            "$IMAGE" ceph --version
+
+      - name: Create offline bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p bundle
+
+          IMAGE="quay.io/ceph/ceph:v19.2.3"
+          ARCHIVE="ceph-v19.2.3-amd64.tar.zst"
+
+          docker save "$IMAGE" | \
+            zstd -T0 -3 -o "/tmp/$ARCHIVE"
+
+          split -b 450M -d -a 3 \
+            "/tmp/$ARCHIVE" \
+            "bundle/$ARCHIVE.part-"
+
+          (
+            cd bundle
+            sha256sum *.part-* > SHA256SUMS
+          )
+
+          sha256sum "/tmp/$ARCHIVE" \
+            | awk '{print $1}' \
+            > bundle/FULL_ARCHIVE_SHA256.txt
+
+          echo "$IMAGE" > bundle/SOURCE_IMAGE.txt
+
+          ls -lh bundle/
+
+      - name: Upload offline bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ceph-v19.2.3-amd64-offline
+          path: bundle/
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
